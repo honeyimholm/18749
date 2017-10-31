@@ -26,13 +26,14 @@ public class BankAccountI extends AbstractServer
 
     @Override
     protected void handleBeginReadBalance(int reqid) {
-        System.out.println(this.balance);
+        System.out.println("Current Check Balance: " + this.balance);
         this.ctl.endReadBalance(reqid, this.balance);
     }
 
     @Override
     protected void handleBeginChangeBalance(int reqid, int update) {
         this.balance += update;
+        System.out.println("Current Updated Balance: " + this.balance);
         this.ctl.endChangeBalance(reqid, this.balance);
     }
 

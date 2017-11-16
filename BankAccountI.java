@@ -1,22 +1,34 @@
-package edu.cmu.rds749.lab2;
+package edu.cmu.rds749.lab3;
 
 import edu.cmu.rds749.common.AbstractServer;
 import org.apache.commons.configuration2.Configuration;
+import rds749.Checkpoint;
+
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Implements the BankAccounts transactions interface
+ * Created by utsav on 8/27/16.
  */
 
 public class BankAccountI extends AbstractServer
 {
-    private final Configuration config;
+    class LogEntry {
+        public METHODS method;
+        public int amount;
+        public int reqid;
+    };
+
 
     private int balance = 0;
+    private boolean isPrimary = false;
     private ProxyControl ctl;
+    private Checkpoint checkpoint = null;
+    private List<LogEntry> log = new ArrayList<LogEntry>();
 
     public BankAccountI(Configuration config) {
         super(config);
-        this.config = config;
     }
 
     @Override
@@ -25,28 +37,57 @@ public class BankAccountI extends AbstractServer
     }
 
     @Override
-    protected void handleBeginReadBalance(int reqid) {
-        System.out.println("Current Check Balance: " + this.balance);
-        this.ctl.endReadBalance(reqid, this.balance);
+    protected void handleBeginReadBalance(int reqid)
+    {
+        LogEntry newEntry = new LogEntry();
+        newEntry.method = METHODS.READ_BALANCE;
+        newEntry.amount = -1;
+        newEntry.reqid = reqid;
+        this.log.add(newEntry);
+
+        //this.ctl.endReadBalance(reqid, this.balance);
     }
 
     @Override
-    protected void handleBeginChangeBalance(int reqid, int update) {
+    protected void handleBeginChangeBalance(int reqid, int update)
+    {
         this.balance += update;
-        System.out.println("Current Updated Balance: " + this.balance);
-        this.ctl.endChangeBalance(reqid, this.balance);
+
+        LogEntry newEntry = new LogEntry();
+        newEntry.method = METHODS.CHANGE_BALANCE;
+        newEntry.amount = update;
+        newEntry.reqid = reqid;
+        this.log.add(newEntry);
+
+        //this.ctl.endChangeBalance(reqid, this.balance);
     }
 
     @Override
-    protected int handleGetState()
+    protected Checkpoint handleGetState()
     {
-        return this.balance;
+        return new Checkpoint();
     }
 
     @Override
-    protected int handleSetState(int balance)
+    protected int handleSetState(Checkpoint checkpoint)
     {
-        this.balance = balance;
-        return this.balance;
+        return 0;
+    }
+
+    @Override
+    protected void handleSetPrimary()
+    {
+        this.isPrimary = true;
+    }
+
+    @Override
+    protected void handleSetBackup()
+    {
+        // Do nothing because isPrimary is default false
+    }
+
+    private enum METHODS {
+        READ_BALANCE,
+        CHANGE_BALANCE;
     }
 }

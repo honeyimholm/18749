@@ -1,80 +1,61 @@
-package edu.cmu.rds749.lab2;
+package edu.cmu.rds749.lab3;
 
 import edu.cmu.rds749.common.AbstractProxy;
 import edu.cmu.rds749.common.BankAccountStub;
-import org.apache.commons.collections.bidimap.DualHashBidiMap;
 import org.apache.commons.configuration2.Configuration;
-import rds749.BankAccount;
+import rds749.IncorrectOperation;
 
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.*;
 
 
 /**
+ * Created by jiaqi on 8/28/16.
  *
  * Implements the Proxy.
  */
 public class Proxy extends AbstractProxy
 {
-    List<BankAccountStub> registeredServers = new ArrayList<BankAccountStub>();
-    List <Long> failedServers = new ArrayList<Long>();
-    HashMap<Integer, List> duplicateSuppressionRecords = new HashMap<>();
-    final ReentrantReadWriteLock registeredServerLock = new ReentrantReadWriteLock();
+    BankAccountStub primaryServer = null;
+    List<BankAccountStub> allServers = new ArrayList<BankAccountStub>();
+    int checkpointFreq;
 
     public Proxy(Configuration config)
     {
         super(config);
+        this.checkpointFreq = this.config.getInt("checkpointFrequency");
+        //TODO:Set up timer event with checkpointing frequency to checkpoint from primaru!
     }
 
     @Override
-    protected void serverRegistered(long id, BankAccountStub stub)
+    protected synchronized void serverRegistered(long id, BankAccountStub stub)
     {
-        int activeBalance = -1;
-
-        registeredServerLock.readLock().lock();
-        if (this.registeredServers.isEmpty()) {
-            activeBalance = 0;
-        }
-        registeredServerLock.readLock().unlock();
-
-
-        while (activeBalance == -1) {
+        if (this.primaryServer == null) {
             try {
-                registeredServerLock.readLock().lock();
-                activeBalance = registeredServers.get(0).getState();
+                stub.setPrimary();
+                this.primaryServer = stub;
+                this.allServers.add(stub);
+            } catch (IncorrectOperation incorrectOperation) {
+                System.out.println("Incorrect operation!");
             } catch (BankAccountStub.NoConnectionException e) {
-                System.out.println("Failed!");
-                registeredServerLock.readLock().unlock();
-                registeredServerLock.writeLock().lock();
-                this.registeredServers.remove(0);
-                registeredServerLock.writeLock().unlock();
-            }
-            finally {
-                registeredServerLock.readLock().unlock();
+                System.out.println("No connection exception... switch servers");
             }
         }
-
-        try {
-            stub.setState(activeBalance);
-        } catch (BankAccountStub.NoConnectionException e) {
-            System.out.println("Couldn't set state...");
-            // Throw an error!
+        else {
+            try {
+                stub.setBackup();
+                this.allServers.add(stub);
+            } catch (BankAccountStub.NoConnectionException e) {
+                System.out.println("Incorrect operation!");
+            } catch (IncorrectOperation incorrectOperation) {
+                System.out.println("No connection exception... remove");
+            }
         }
-
-        registeredServerLock.writeLock().lock();
-        this.registeredServers.add(stub);
-        registeredServerLock.writeLock().unlock();
-
     }
 
     @Override
     protected synchronized void beginReadBalance(int reqid)
     {
         System.out.println("(In Proxy Begin Read Balance)");
-
         sendToAllServers(reqid, 0, true);
     }
 
@@ -82,7 +63,6 @@ public class Proxy extends AbstractProxy
     protected synchronized void beginChangeBalance(int reqid, int update)
     {
         System.out.println("(In Proxy Begin Change Balance)");
-
         sendToAllServers(reqid, update, false);
     }
 
@@ -90,7 +70,10 @@ public class Proxy extends AbstractProxy
     protected synchronized void endReadBalance(long serverid, int reqid, int balance)
     {
         System.out.println("(In Proxy End Read Balance)");
-        if (this.duplicateSuppressionRecords.containsKey(reqid)) {
+
+        //TODO: Handle response from primary and then backups
+
+        /*if (this.duplicateSuppressionRecords.containsKey(reqid)) {
             this.duplicateSuppressionRecords.get(reqid).add(serverid);
         } else {
             List<Long> newReqidResponses = new ArrayList<>();
@@ -101,14 +84,17 @@ public class Proxy extends AbstractProxy
                 this.registeredServers.size()) {
             this.duplicateSuppressionRecords.remove(reqid);
             this.clientProxy.endReadBalance(reqid, balance);
-        }
+        }*/
     }
 
     @Override
     protected synchronized void endChangeBalance(long serverid, int reqid, int balance)
     {
         System.out.println("(In Proxy End Change Balance)");
-        if (this.duplicateSuppressionRecords.containsKey(reqid)) {
+
+        //TODO: Handle response from primary and then backups
+
+        /*if (this.duplicateSuppressionRecords.containsKey(reqid)) {
             this.duplicateSuppressionRecords.get(reqid).add(serverid);
         } else {
             List<Long> newReqidResponses = new ArrayList<>();
@@ -119,24 +105,24 @@ public class Proxy extends AbstractProxy
                 this.registeredServers.size()) {
             this.duplicateSuppressionRecords.remove(reqid);
             this.clientProxy.endChangeBalance(reqid, balance);
-        }
+        }*/
     }
 
     @Override
-    protected void serversFailed(List<Long> failedServers)
+    protected synchronized void serversFailed(List<Long> failedServers)
     {
         super.serversFailed(failedServers);
     }
 
     protected synchronized void sendToAllServers(int reqid, int update, boolean doRead) {
-        if (this.registeredServers.isEmpty()) {
+        if (this.allServers.isEmpty()) {
             this.clientProxy.RequestUnsuccessfulException(reqid);
             return;
         }
 
         List<BankAccountStub> failedServers = new ArrayList<>();
 
-        for (BankAccountStub stub : this.registeredServers) {
+        for (BankAccountStub stub : this.allServers) {
             try {
                 if (doRead) stub.beginReadBalance(reqid);
                 else stub.beginChangeBalance(reqid, update);
@@ -146,11 +132,20 @@ public class Proxy extends AbstractProxy
         }
 
         for (BankAccountStub stub : failedServers) {
-            this.registeredServers.remove(stub);
+            if (stub == this.primaryServer) {
+                // TODO: Trigger failover and select new primary from backups
+                this.primaryServer = null;
+                selectNewPrimary();
+            }
+            this.allServers.remove(stub);
         }
 
-        if (this.registeredServers.isEmpty()) {
+        if (this.allServers.isEmpty()) {
             this.clientProxy.RequestUnsuccessfulException(reqid);
         }
+    }
+
+    protected void selectNewPrimary() {
+        // TODO:Go through backups and select a new working primary similar to lab1
     }
 }
